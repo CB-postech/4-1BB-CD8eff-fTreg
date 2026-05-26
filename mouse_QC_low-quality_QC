@@ -1,0 +1,91 @@
+# conda activate project_lung_exercise_R
+### basic_QC
+library(Seurat)
+library(scater)
+library(SingleCellExperiment)
+library(magrittr)
+library(ggplot2)
+
+save_path = '/home/sjcho/projects/4-1BB/DA240060/outs/QC/2.lowQuliatyQC'
+
+sce.p1 <- readRDS('/home/sjcho/projects/4-1BB/DA240060/outs/QC/1.dropletUtils/empty_filtered_pool1_lower500.rds')
+# sce.p2 <- readRDS('/home/sjcho/projects/4-1BB/DA240060/outs/1.dropletUtils/empty_filtered_pool2_lower600.rds')
+sce.p2 <- readRDS('/home/sjcho/projects/4-1BB/DA240060/outs/QC/1.dropletUtils/empty_filtered_pool2_lower600.rds')
+# sce.p2 <- readRDS('/home/sjcho/projects/4-1BB/DA240060/outs/QC/1.dropletUtils/empty_filtered_pool2_lower550.rds')
+
+preprocess <- function(sce, save_path = save_path, sample_name, umi = 1000, mt.pct = 5, detected = 500){
+  rownames(sce) = uniquifyFeatureNames(rowData(sce)$ID, rowData(sce)$Symbol)
+  
+  mtgenes = rowData(sce)[grep("^mt-", rowData(sce)$Symbol),]$Symbol
+  is.mito = rownames(sce) %in% mtgenes
+  
+  sce <- addPerCellQC(
+    sce,
+    subsets = list(MT=mtgenes),
+    percent_top = c(50, 100, 200, 500), 
+    detection_limit = 0
+  )
+  
+  sce$log10_sum = log10(sce$sum + 1)
+  sce$log10_detected = log10(sce$detected + 1)
+  
+  df <- data.frame(
+    log10_sum = sce$log10_sum,
+    detected = sce$log10_detected,
+    subsets_MT_percent = sce$subsets_MT_percent,
+    percent.top_500 = sce$percent.top_500
+  )
+  p <- ggplot(df, aes(x = log10_sum)) + geom_histogram(bins = 300) + ggtitle(paste0(sample_name, ' log10(nCount)'))
+  p <- p + theme_classic()
+  p <- p + geom_vline(xintercept = log10(umi), color = "red")
+  ggsave(p, file = paste0(save_path, sample_name, '_log10_sum.png'))
+
+  p <- ggplot(df, aes(x = subsets_MT_percent)) + geom_histogram(bins = 300) + ggtitle(paste0(sample_name, ' MT percent'))
+  p <- p + theme_classic()
+  p <- p + geom_vline(xintercept = mt.pct, color = "red")
+  ggsave(p, file = paste0(save_path, sample_name, '_MT_pct.png'))
+
+  p <- ggplot(df, aes(x = detected)) + geom_histogram(bins = 300) + ggtitle(paste0(sample_name, ' log10(nFeature)'))
+  p <- p + theme_classic()
+  p <- p + geom_vline(xintercept = log10(detected), color = "red")
+  ggsave(p, file = paste0(save_path, sample_name, '_log10_detected.png'))
+
+  sce <- sce[,sce$sum!=0]
+  return(sce)
+}
+
+filtering <- function(sce,umi = 1000, mtpct = 10, detect = 0, save_path, sample_name){
+  filter_by_total_counts = sce$sum > umi
+  filter_by_mt_percent = sce$subsets_MT_percent < mtpct
+  filter_by_nfeature = sce$detected > detect
+  
+  sce <- runColDataPCA(sce, variables = list("sum", "detected", "subsets_MT_percent", "percent.top_500"))
+  
+  sce$use <- (
+    filter_by_total_counts &
+      filter_by_mt_percent &
+      filter_by_nfeature
+  )
+  
+  p <- plotReducedDim(sce, dimred="PCA_coldata", colour_by="use")
+  p <- p + ggtitle(sample_name) + theme_classic()
+  ggsave(p, file = paste0(save_path, sample_name, '_PCA_use.png'))
+
+  sce = sce[,sce$use]
+  return(sce)
+}
+
+### Pool-1
+sce.p1 <- sce.p1[subset(rowData(sce.p1), Type == 'Gene Expression') %>% rownames, ]
+rownames(sce.p1) <- rowData(sce.p1)$Symbol
+sce.p1 = preprocess(sce.p1, save_path = save_path, sample_name = 'pool1')
+sce.p1 = filtering(sce.p1, save_path = save_path, sample_name = 'pool1', umi = 1000, mtpct = 5, detect = 0)
+
+### Pool-2
+sce.p2 <- sce.p2[subset(rowData(sce.p2), Type == 'Gene Expression') %>% rownames, ]
+rownames(sce.p2) <- rowData(sce.p2)$Symbol
+sce.p2 = preprocess(sce.p2, save_path = save_path, sample_name = '/pool2_lower600', umi = 2000)
+sce.p2 = filtering(sce.p2, save_path = save_path, sample_name = 'pool2', umi = 2000, mtpct = 5, detect = 0)
+
+saveRDS(sce.p1, file = paste0(save_path, '/filtered_pool1_mt15.rds'))
+saveRDS(sce.p2, file = paste0(save_path, '/filtered_pool2_lower600_umi2000_mt5.rds'))
